@@ -2,24 +2,28 @@ run_name: ddpm
 seed: 42
 data_dir: ./data
 image_size: 128
-batch_size: #BATCH_SIZE 
-num_workers: #NUM_WORKERS
-num_classes: #NUM_CLASSES
-num_epochs: #NUM_EPOCHS
-learning_rate: #LR
-weight_decay: #WD
-num_train_timesteps: #TRAINING_TIMESTEPS
-num_inference_steps: #INFERENCE_TIMESTEPS
-beta_start: #BETA START
-beta_end: #BETA END
-beta_schedule: #BETA SCHEDULE
+batch_size: 16               #BATCH_SIZE - Adjust based on your GPU memory; 16 is reasonable for 128x128 images on mid-range GPUs
+num_workers: 4               #NUM_WORKERS - Adjust based on the number of CPU cores you have; 4 is a good start
+num_classes: 100             #NUM_CLASSES - Assuming 100 classes (if this matches your dataset)
+num_epochs: 50               #NUM_EPOCHS - 50 epochs is typical, but you can adjust based on time constraints
+learning_rate: 1e-4          #LR - Typical learning rate for diffusion models
+weight_decay: 1e-4           #WD - Small weight decay for regularization
 
-variance_type: fixed_small
-predictor_type: epsilon
-unet_in_size: 128
-unet_in_ch: 3
-unet_ch: 128
-unet_num_res_blocks: 2
-unet_ch_mult: [1, 2, 2, 4]
-unet_attn: [2, 3]
-unet_dropout: 0.0
+# Diffusion process parameters
+num_train_timesteps: 1000    #TRAINING_TIMESTEPS - Number of diffusion steps in training; 1000 is standard for DDPMs
+num_inference_steps: 200     #INFERENCE_TIMESTEPS - Fewer steps for inference (speeds up generation)
+beta_start: 0.0001           #BETA START - Start of noise variance; small positive value
+beta_end: 0.02               #BETA END - End of noise variance; increases noise over time
+beta_schedule: linear        #BETA SCHEDULE - Linear noise schedule is common for DDPMs
+
+variance_type: fixed_small   # Keep as is; "fixed_small" is standard
+predictor_type: epsilon      # Keep as is; "epsilon" means predicting noise instead of the clean image
+
+# U-Net configuration
+unet_in_size: 128            # Input image size for U-Net
+unet_in_ch: 3                # Number of input channels (3 for RGB images)
+unet_ch: 128                 # Base number of channels in U-Net; adjust based on memory
+unet_num_res_blocks: 2       # Number of residual blocks per U-Net stage
+unet_ch_mult: [1, 2, 2, 4]   # Channel multiplier per U-Net downsampling stage
+unet_attn: [2, 3]            # Attention layers; apply at the 2nd and 3rd stage
+unet_dropout: 0.0            # No dropout; adjust to 0.1–0.2 for regularization if needed
