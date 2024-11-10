@@ -26,6 +26,35 @@ def parse_args():
     
     # Config file
     parser.add_argument("--config", type=str, default='configs/ddpm.yaml', help="config file used to specify parameters")
+    
+    # Other arguments needed in the script
+    parser.add_argument("--output_dir", type=str, default="/home/ubuntu/test/IDLHW5/output", help="Directory for output files")
+    parser.add_argument("--run_name", type=str, default=None, help="Name of the experiment run")
+    parser.add_argument("--data_dir", type=str, default="./data", help="Directory for dataset")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
+    parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs for training")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate for optimizer")
+    parser.add_argument("--weight_decay", type=float, default=0, help="Weight decay for optimizer")
+
+    # Model-specific arguments
+    parser.add_argument("--image_size", type=int, default=32, help="Input image size")
+    parser.add_argument("--unet_in_size", type=int, default=32, help="Input size for UNet")
+    parser.add_argument("--unet_in_ch", type=int, default=3, help="Number of input channels for UNet")
+    parser.add_argument("--unet_ch", type=int, default=64, help="Base number of channels for UNet")
+    parser.add_argument("--unet_ch_mult", type=list, default=[1, 2, 4, 8], help="Channel multiplier for each layer of UNet")
+    parser.add_argument("--unet_attn", type=bool, default=False, help="Use attention in UNet")
+    parser.add_argument("--unet_num_res_blocks", type=int, default=2, help="Number of residual blocks in UNet")
+    parser.add_argument("--unet_dropout", type=float, default=0.1, help="Dropout rate in UNet")
+    parser.add_argument("--num_train_timesteps", type=int, default=1000, help="Number of timesteps for training")
+    parser.add_argument("--use_cfg", type=bool, default=False, help="Whether to use classifier-free guidance")
+
+    # Distributed training arguments
+    parser.add_argument("--distributed", type=str2bool, default=False, help="Enable distributed training")
+    parser.add_argument("--world_size", type=int, default=1, help="World size for distributed training")
+    parser.add_argument("--rank", type=int, default=0, help="Rank for distributed training")
+    parser.add_argument("--device", type=str, default="cuda", help="Device to use for training")
 
     # First parse command-line args to check for config file
     args = parser.parse_args()
@@ -45,6 +74,16 @@ def parse_args():
 def main():
     # Parse arguments
     args = parse_args()
+    
+    # WandB authentication setup
+    wandb.login(key="f5e8f40b42dcfd326f8e06e3cc6bae069adeb506")  # Uncomment this line to use direct login with the API key
+
+    # Initialize wandb
+    wandb.init(
+        project="HWP5",  # Replace with your project name
+        name=args.run_name,
+        config=args  # Logs all args as configuration
+    )
     
     # Seed everything
     seed_everything(args.seed)
@@ -104,14 +143,17 @@ def main():
     
     # Setup model
     logger.info("Creating model")
-    # UNet
+    # UNet and scheduler initialization
     unet = UNet(input_size=args.unet_in_size, input_ch=args.unet_in_ch, T=args.num_train_timesteps, ch=args.unet_ch, ch_mult=args.unet_ch_mult, attn=args.unet_attn, num_res_blocks=args.unet_num_res_blocks, dropout=args.unet_dropout, conditional=args.use_cfg, c_dim=args.unet_ch)
-    
+    scheduler = DDPMScheduler(num_train_timesteps=args.num_train_timesteps)  # Example scheduler initialization
+    vae = VAE()  # Initialize VAE if needed
+
     # Setup optimizer
     optimizer = torch.optim.AdamW(unet.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     
-    # Send to device
+    # Send models to device
     unet = unet.to(device)
+    vae = vae.to(device)
     
     # Training loop
     logger.info("Training begins...")
@@ -128,10 +170,10 @@ def main():
                 wandb.log({'loss': loss_m.avg})
                 
             if step % 500 == 0 and is_primary(args):
-                save_checkpoint(unet, optimizer, epoch, loss_m.avg, save_dir)
+                save_checkpoint(unet, scheduler, vae, optimizer=optimizer, epoch=epoch, save_dir=save_dir)
     
     # Final save checkpoint
-    save_checkpoint(unet, optimizer, epoch, loss_m.avg, save_dir)
+    save_checkpoint(unet, scheduler, vae, optimizer=optimizer, epoch=epoch, save_dir=save_dir)
     
 if __name__ == "__main__":
     main()
