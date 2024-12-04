@@ -29,6 +29,14 @@ def parse_args():
     return parser.parse_args()
 
 def save_images(images, output_dir, batch_idx):
+    """
+    Saves a batch of images to the specified directory.
+
+    Args:
+        images (list[PIL.Image]): List of generated images.
+        output_dir (str): Directory to save images.
+        batch_idx (int): Index of the current batch.
+    """
     os.makedirs(output_dir, exist_ok=True)
     for i, img in enumerate(images):
         img.save(os.path.join(output_dir, f"generated_image_{batch_idx * len(images) + i}.png"))
@@ -92,14 +100,28 @@ def main():
     # VAE (Latent DDPM)
     vae = None
     if config.get('latent_ddpm', False):
-        vae = VAE()
+        vae = VAE(
+            double_z=True,
+            z_channels=config['unet_in_ch'],
+            embed_dim=config['unet_in_ch'],
+            resolution=config['unet_in_size'],
+            in_channels=config['unet_in_ch'],
+            out_ch=config['unet_in_ch'],
+            ch=config['unet_ch'],
+            ch_mult=config['unet_ch_mult'],
+            num_res_blocks=config['unet_num_res_blocks']
+        ).to(device)
         vae.init_from_ckpt('pretrained/model.ckpt')
-        vae.eval().to(device)
-    
+        vae.eval()
+
     # Class Embedder (CFG)
     class_embedder = None
     if config.get('use_cfg', False):
-        class_embedder = ClassEmbedder(num_classes=config['num_classes']).to(device)
+        class_embedder = ClassEmbedder(
+            embed_dim=config['unet_ch'], 
+            n_classes=config['num_classes'],
+            cond_drop_rate=0.1
+        ).to(device)
 
     # Load checkpoint
     load_checkpoint(unet, scheduler, vae=vae, class_embedder=class_embedder, checkpoint_path=args.ckpt)
@@ -121,9 +143,10 @@ def main():
         for i in range(config['num_classes']):
             logger.info(f"Generating 50 images for class {i}")
             classes = torch.full((batch_size,), i, dtype=torch.long, device=device)
-            gen_images = pipeline(batch_size=batch_size, classes=classes, generator=generator)
-            save_images(gen_images, args.output_dir, batch_idx)
-            batch_idx += 1
+            for _ in tqdm(range(0, 50, batch_size)):
+                gen_images = pipeline(batch_size=batch_size, classes=classes, generator=generator)
+                save_images(gen_images, args.output_dir, batch_idx)
+                batch_idx += 1
     else:
         # Generate 5000 images without classes
         for _ in tqdm(range(0, num_images, batch_size)):
