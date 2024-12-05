@@ -1,16 +1,15 @@
-import os
-import sys
+import os 
+import sys 
 import argparse
 import numpy as np
-from ruamel.yaml import YAML
+import ruamel.yaml as yaml
 import torch
-import wandb
-import logging
+import wandb 
+import logging 
 from logging import getLogger as get_logger
-from tqdm import tqdm
+from tqdm import tqdm 
 from PIL import Image
 import torch.nn.functional as F
-
 from torchvision import datasets, transforms
 from torchvision.utils import make_grid
 
@@ -19,142 +18,130 @@ from schedulers import DDPMScheduler, DDIMScheduler
 from pipelines import DDPMPipeline
 from utils import seed_everything, load_checkpoint
 
+from train import parse_args
+
 logger = get_logger(__name__)
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Inference for a trained DDPM model.")
-    parser.add_argument("--config", type=str, default='configs/ddpm.yaml', help="Path to config file.")
-    parser.add_argument("--ckpt", type=str, required=True, help="Checkpoint path.")
-    parser.add_argument("--output_dir", type=str, default='generated_images', help="Directory to save generated images.")
-    return parser.parse_args()
-
-def save_images(images, output_dir, batch_idx):
-    """
-    Saves a batch of images to the specified directory.
-
-    Args:
-        images (list[PIL.Image]): List of generated images.
-        output_dir (str): Directory to save images.
-        batch_idx (int): Index of the current batch.
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    for i, img in enumerate(images):
-        img.save(os.path.join(output_dir, f"generated_image_{batch_idx * len(images) + i}.png"))
+# Define a function to load validation images
+def load_validation_images(val_dir, batch_size, num_workers=4):
+    transform = transforms.Compose([
+        transforms.Resize((256, 256)),  # Resize all images to a common size
+        transforms.ToTensor(),          # Convert images to PyTorch tensors
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # Normalization
+    ])
+    
+    validation_dataset = datasets.ImageFolder(root=val_dir, transform=transform)
+    validation_loader = torch.utils.data.DataLoader(
+        validation_dataset,
+        batch_size=batch_size,
+        shuffle=False,  # No shuffling for validation
+        num_workers=num_workers,
+        pin_memory=True
+    )
+    
+    return validation_loader
 
 def main():
     # Parse arguments
     args = parse_args()
-
-    # Load configuration
-    with open(args.config, 'r', encoding='utf-8') as f:
-        yaml = YAML(typ='safe', pure=True)
-        config = yaml.load(f)
-
-    # Seed everything
-    seed_everything(config['seed'])
     
-    # Device setup
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Logging
+    # Seed everything
+    seed_everything(args.seed)
+    
+    # Setup logging 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
     
+    # Device setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    generator = torch.Generator(device=device)
+    generator.manual_seed(args.seed)
+    
     # Model setup
     logger.info("Creating model")
     unet = UNet(
-        input_size=config['unet_in_size'],
-        input_ch=config['unet_in_ch'],
-        T=config['num_train_timesteps'],
-        ch=config['unet_ch'],
-        ch_mult=config['unet_ch_mult'],
-        attn=config['unet_attn'],
-        num_res_blocks=config['unet_num_res_blocks'],
-        dropout=config['unet_dropout'],
-        conditional=config['use_cfg'],
-        c_dim=config['unet_ch']
-    ).to(device)
-    logger.info(f"Model created with {sum(p.numel() for p in unet.parameters() if p.requires_grad) / 10 ** 6:.2f}M parameters")
-
-    # Scheduler
-    if config['use_ddim']:
-        scheduler = DDIMScheduler(
-            num_train_timesteps=config['num_train_timesteps'],
-            num_inference_steps=config['num_inference_steps'],
-            beta_start=config['beta_start'],
-            beta_end=config['beta_end'],
-            beta_schedule=config['beta_schedule'],
-        )
-    else:
-        scheduler = DDPMScheduler(
-            num_train_timesteps=config['num_train_timesteps'],
-            beta_start=config['beta_start'],
-            beta_end=config['beta_end'],
-            beta_schedule=config['beta_schedule'],
-        )
-    scheduler.to(device)
+        input_size=args.unet_in_size, input_ch=args.unet_in_ch,
+        T=args.num_train_timesteps, ch=args.unet_ch,
+        ch_mult=args.unet_ch_mult, attn=args.unet_attn,
+        num_res_blocks=args.unet_num_res_blocks, dropout=args.unet_dropout,
+        conditional=args.use_cfg, c_dim=args.unet_ch
+    )
     
-    # VAE (Latent DDPM)
-    vae = None
-    if config.get('latent_ddpm', False):
-        vae = VAE(
-            double_z=True,
-            z_channels=config['unet_in_ch'],
-            embed_dim=config['unet_in_ch'],
-            resolution=config['unet_in_size'],
-            in_channels=config['unet_in_ch'],
-            out_ch=config['unet_in_ch'],
-            ch=config['unet_ch'],
-            ch_mult=config['unet_ch_mult'],
-            num_res_blocks=config['unet_num_res_blocks']
-        ).to(device)
+    # Print the number of parameters
+    num_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
+    logger.info(f"Number of parameters: {num_params / 10 ** 6:.2f}M")
+    
+    # Setup scheduler
+    scheduler_class = DDIMScheduler if args.use_ddim else DDPMScheduler
+    scheduler = scheduler_class(num_train_timesteps=args.num_train_timesteps).to(device)
+    
+    # VAE setup if using latent DDPM (for later use)
+    vae = VAE().to(device) if args.latent_ddpm else None
+    if vae:
         vae.init_from_ckpt('pretrained/model.ckpt')
         vae.eval()
-
-    # Class Embedder (CFG)
-    class_embedder = None
-    if config.get('use_cfg', False):
-        class_embedder = ClassEmbedder(
-            embed_dim=config['unet_ch'], 
-            n_classes=config['num_classes'],
-            cond_drop_rate=0.1
-        ).to(device)
-
+    
+    # Class embedder setup if using classifier-free guidance
+    class_embedder = ClassEmbedder(None).to(device) if args.use_cfg else None
+    
+    # Send U-Net to device
+    unet = unet.to(device)
+    
     # Load checkpoint
     load_checkpoint(unet, scheduler, vae=vae, class_embedder=class_embedder, checkpoint_path=args.ckpt)
     
     # Setup pipeline
-    pipeline = DDPMPipeline(unet=unet, scheduler=scheduler, vae=vae, class_embedder=class_embedder)
+    pipeline = DDPMPipeline(unet=unet, scheduler=scheduler)
 
     logger.info("***** Running Inference *****")
-
-    # Generate images and save them
-    num_images = 5000
-    batch_size = config['batch_size']
-    generator = torch.Generator(device=device)
-    generator.manual_seed(config['seed'])
-
-    batch_idx = 0
-    if config.get('use_cfg', False):
-        # Generate 50 images per class if using CFG
-        for i in range(config['num_classes']):
+    
+    # Generate images
+    all_images = []
+    if args.use_cfg:
+        # Generate 50 images per class
+        for i in tqdm(range(args.num_classes)):
             logger.info(f"Generating 50 images for class {i}")
+            batch_size = 50
             classes = torch.full((batch_size,), i, dtype=torch.long, device=device)
-            for _ in tqdm(range(0, 50, batch_size)):
-                gen_images = pipeline(batch_size=batch_size, classes=classes, generator=generator)
-                save_images(gen_images, args.output_dir, batch_idx)
-                batch_idx += 1
+            gen_images = pipeline(batch_size=batch_size, class_labels=classes)
+            all_images.append(gen_images)
     else:
-        # Generate 5000 images without classes
-        for _ in tqdm(range(0, num_images, batch_size)):
-            gen_images = pipeline(batch_size=batch_size, generator=generator)
-            save_images(gen_images, args.output_dir, batch_idx)
-            batch_idx += 1
+        # Generate 5000 images
+        for _ in tqdm(range(0, 5000, args.batch_size)):
+            gen_images = pipeline(batch_size=args.batch_size)
+            all_images.append(gen_images)
+    
+    # Load validation images as a reference batch
+    val_dir = os.path.join(args.data_dir, 'validation')
+    validation_loader = load_validation_images(val_dir=val_dir, batch_size=args.batch_size, num_workers=args.num_workers)
 
-    logger.info(f"Images saved in {args.output_dir}")
+    # Evaluate using torchmetrics
+    import torchmetrics
+    from torchmetrics.image.fid import FrechetInceptionDistance
+    from torchmetrics.image.inception import InceptionScore
+    
+    # Initialize FID and Inception Score metrics
+    fid = FrechetInceptionDistance(feature=2048).to(device)
+    inception_score = InceptionScore().to(device)
+
+    # Iterate over validation data and update metrics
+    for val_images, _ in validation_loader:
+        val_images = val_images.to(device)
+        fid.update(val_images, real=True)
+
+    # Update with generated images
+    for gen_batch in all_images:
+        fid.update(gen_batch, real=False)
+
+    # Compute and log final FID and Inception scores
+    fid_score = fid.compute().item()
+    inception_score_value = inception_score.compute().item()
+    
+    logger.info(f"FID Score: {fid_score}")
+    logger.info(f"Inception Score: {inception_score_value}")
 
 if __name__ == '__main__':
     main()

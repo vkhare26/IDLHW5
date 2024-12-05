@@ -1,6 +1,7 @@
 run_name: ddpm_cifar10
 seed: 42
 data_dir: ./data  # Directory for downloading CIFAR-10 automatically
+
 image_size: 32  # CIFAR-10 original size; or set to 128 if resizing images
 batch_size: 16  # Adjust based on available GPU memory; 16 is a common choice
 num_workers: 4  # Set based on your system's CPU cores
@@ -27,5 +28,5 @@ unet_num_res_blocks: 2
 unet_ch_mult: [1, 2, 4]  # Adjust if necessary
 unet_attn: [1]  # Attention layers, simplified for smaller images
 unet_dropout: 0.0
-use_cfg: False
+use_cfg: True
 use_ddim: True
