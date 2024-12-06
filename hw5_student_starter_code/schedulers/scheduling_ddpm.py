@@ -82,7 +82,7 @@ class DDPMScheduler(nn.Module):
           variance_noise = randn_tensor(model_output.shape, generator=generator, device=model_output.device)
           pred_prev_sample += torch.sqrt(variance) * variance_noise
 
-      return pred_prev_sample
+      return {"prev_sample": pred_prev_sample}
 
 
     def _get_variance(self, t: int):

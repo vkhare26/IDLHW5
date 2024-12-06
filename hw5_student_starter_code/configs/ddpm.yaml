@@ -1,6 +1,7 @@
 run_name: ddpm_cifar10
 seed: 42
 data_dir: ./data  # Directory for downloading CIFAR-10 automatically
+validation_dir: /content/IDLHW5/validation_dir
 
 image_size: 32  # CIFAR-10 original size; or set to 128 if resizing images
 batch_size: 16  # Adjust based on available GPU memory; 16 is a common choice

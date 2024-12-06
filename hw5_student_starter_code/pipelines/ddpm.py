@@ -104,7 +104,7 @@ class DDPMPipeline:
                 c = class_embeds
 
             # Predict noise using the model
-            model_output = self.unet(model_input, t, class_emb=c)
+            model_output = self.unet(model_input, t)
 
             if guidance_scale is not None and guidance_scale != 1.0:
                 # CFG: Combine conditional and unconditional outputs
